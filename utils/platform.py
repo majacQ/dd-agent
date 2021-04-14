@@ -3,12 +3,25 @@
 # Licensed under Simplified BSD License (see LICENSE)
 
 # stdlib
+import os
 import sys
 
-# project
-from utils.dockerutil import DockerUtil
 
-_is_ecs = None
+def get_os():
+    "Human-friendly OS name"
+    if sys.platform == 'darwin':
+        return 'mac'
+    elif sys.platform.find('freebsd') != -1:
+        return 'freebsd'
+    elif sys.platform.find('linux') != -1:
+        return 'linux'
+    elif sys.platform.find('win32') != -1:
+        return 'windows'
+    elif sys.platform.find('sunos') != -1:
+        return 'solaris'
+    else:
+        return sys.platform
+
 
 class Platform(object):
     """
@@ -72,4 +85,46 @@ class Platform(object):
 
     @staticmethod
     def is_ecs_instance():
-        return DockerUtil().is_ecs()
+        from utils.dockerutil import DockerUtil
+        try:
+            return DockerUtil().is_ecs()
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_containerized():
+        return os.environ.get("DOCKER_DD_AGENT") == "yes"
+
+    @staticmethod
+    def is_k8s():
+        from utils.dockerutil import DockerUtil
+        try:
+            return DockerUtil().is_k8s()
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_rancher():
+        from utils.dockerutil import DockerUtil
+        try:
+            return DockerUtil().is_rancher()
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_swarm():
+        from utils.dockerutil import DockerUtil
+        try:
+            return DockerUtil().is_swarm()
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_nomad():
+        from utils.orchestrator import NomadUtil
+        return NomadUtil.is_detected()
+
+    @staticmethod
+    def is_mesos():
+        from utils.orchestrator import MesosUtil
+        return MesosUtil.is_detected()

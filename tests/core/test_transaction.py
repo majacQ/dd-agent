@@ -149,6 +149,7 @@ class TestTransaction(unittest.TestCase):
 
         app = Application()
         app.skip_ssl_validation = False
+        app.agent_dns_caching = False
         app._agentConfig = config
         app.use_simple_http_client = True
 
@@ -183,6 +184,7 @@ class TestTransaction(unittest.TestCase):
 
         app = Application()
         app.skip_ssl_validation = False
+        app.agent_dns_caching = False
         app._agentConfig = config
         app.use_simple_http_client = True
 
@@ -218,9 +220,13 @@ class TestTransaction(unittest.TestCase):
         self.assertEqual(endpoints, expected, (endpoints, expected))
 
         for url in endpoints:
-            r = requests.post(url, data=json.dumps({"foo": "bar"}),
-                              headers={'Content-Type': "application/json"})
-            r.raise_for_status()
+            try:
+                r = requests.post(url, data=json.dumps({"foo": "bar"}),
+                                headers={'Content-Type': "application/json"})
+                r.raise_for_status()
+            except requests.HTTPError:
+                if r.status_code != 400 or 'No series present in the payload' not in r.content:
+                    raise
 
         # API Service Check Transaction
         APIServiceCheckTransaction._trManager = trManager
@@ -298,7 +304,6 @@ class TestTransaction(unittest.TestCase):
         self.assertEqual(trManager._finished_flushes, step)
         self.assertIs(trManager._trs_to_flush, None)
 
-    @attr('unix')
     def test_no_parallelism(self):
         step = 2
         trManager = TransactionManager(timedelta(seconds=0), MAX_QUEUE_SIZE,
@@ -312,7 +317,11 @@ class TestTransaction(unittest.TestCase):
             self.assertEqual(trManager._running_flushes, 1)
             self.assertEqual(trManager._finished_flushes, i)
             self.assertEqual(len(trManager._trs_to_flush), step - (i + 1))
-            time.sleep(1)
+            time.sleep(1.3)
+        # Once it's finished
+        self.assertEqual(trManager._running_flushes, 0)
+        self.assertEqual(trManager._finished_flushes, 2)
+        self.assertIs(trManager._trs_to_flush, None)
 
     def test_multiple_endpoints(self):
         config = {
@@ -338,3 +347,5 @@ class TestTransaction(unittest.TestCase):
         MetricTransaction({}, {})
         # 2 endpoints = 2 transactions
         self.assertEqual(len(trManager._transactions), 2)
+        self.assertEqual(trManager._transactions[0]._endpoint, 'https://app.datadoghq.com')
+        self.assertEqual(trManager._transactions[1]._endpoint, 'https://app.example.com')

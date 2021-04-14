@@ -9,9 +9,12 @@ from operator import attrgetter
 import sys
 import time
 
+# 3rd party
+from tornado import ioloop
+
 # project
 from checks.check_status import ForwarderStatus
-from util import get_tornado_ioloop, plural
+from util import plural
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +79,7 @@ class TransactionManager(object):
         self._THROTTLING_DELAY = throttling_delay
         self._MAX_PARALLELISM = max_parallelism
         self._MAX_ENDPOINT_ERRORS = max_endpoint_errors
+        self._MAX_FLUSH_DURATION = timedelta(seconds=10)
 
         self._flush_without_ioloop = False # useful for tests
 
@@ -87,7 +91,7 @@ class TransactionManager(object):
         self._transactions_received = 0
         self._transactions_flushed = 0
 
-        self._too_big_count = 0
+        self._transactions_rejected = 0
 
         # Global counter to assign a number to each transaction: we may have an issue
         #  if this overlaps
@@ -130,9 +134,7 @@ class TransactionManager(object):
             new_trs = sorted(self._transactions,key=attrgetter('_next_flush'), reverse = True)
             for tr2 in new_trs:
                 if (self._total_size + tr_size) > self._MAX_QUEUE_SIZE:
-                    self._transactions.remove(tr2)
-                    self._total_count = self._total_count - 1
-                    self._total_size = self._total_size - tr2.get_size()
+                    self._remove(tr2)
                     log.warn("Removed transaction %s from queue" % tr2.get_id())
 
         # Done
@@ -143,6 +145,17 @@ class TransactionManager(object):
 
         log.debug("Transaction %s added" % (tr.get_id()))
         self.print_queue_stats()
+
+    def _remove(self, tr):
+        '''Safely remove transaction from list'''
+        try:
+            self._transactions.remove(tr)
+        except ValueError:
+            # Should not happen if we order the queue consistently, but we should catch the error anyway
+            log.warn("Tried to remove transaction %s from queue but it was not in the queue anymore.", tr.get_id())
+        else:
+            self._total_count -= 1
+            self._total_size -= tr.get_size()
 
     def flush(self):
 
@@ -189,11 +202,21 @@ class TransactionManager(object):
             flush_count=self._flush_count,
             transactions_received=self._transactions_received,
             transactions_flushed=self._transactions_flushed,
-            too_big_count=self._too_big_count).persist()
+            transactions_rejected=self._transactions_rejected).persist()
 
     def flush_next(self):
 
         if self._trs_to_flush is not None and len(self._trs_to_flush) > 0:
+            # Running for too long?
+            if datetime.utcnow() - self._flush_time >= self._MAX_FLUSH_DURATION:
+                log.warn('Flush %s is taking more than 10s, stopping it', self._flush_count)
+                for tr in self._trs_to_flush:
+                    # Recompute these transactions' next flush so that if we hit the max queue size
+                    # newer transactions are preserved
+                    tr.compute_next_flush(self._MAX_WAIT_FOR_REPLAY)
+                self._trs_to_flush = []
+                return self.flush_next()
+
             td = self._last_flush + self._THROTTLING_DELAY - datetime.utcnow()
             delay = td.total_seconds()
 
@@ -204,7 +227,7 @@ class TransactionManager(object):
                 log.debug("Flushing transaction %d", tr.get_id())
                 try:
                     tr.flush()
-                except Exception as e :
+                except Exception as e:
                     log.exception(e)
                     self.tr_error(tr)
                 self.flush_next()
@@ -213,7 +236,7 @@ class TransactionManager(object):
             # Otherwise, schedule a flush as soon as possible (throttling)
             elif self._running_flushes < self._MAX_PARALLELISM:
                 # Wait a little bit more
-                tornado_ioloop = get_tornado_ioloop()
+                tornado_ioloop = ioloop.IOLoop.current()
                 if tornado_ioloop._running:
                     tornado_ioloop.add_timeout(time.time() + delay,
                                                lambda: self.flush_next())
@@ -259,34 +282,30 @@ class TransactionManager(object):
 
             self._trs_to_flush = new_trs_to_flush
 
-    def tr_error_too_big(self, tr):
+    def tr_error_reject_request(self, tr, response_code):
         self._running_flushes -= 1
         self._finished_flushes += 1
         tr.inc_error_count()
-        log.warn("Transaction %d is %sKB, it has been rejected as too large. "
-                 "It will not be replayed.",
+        log.warn("Transaction %d has been rejected (code %d, size %sKB), it will not be replayed",
                  tr.get_id(),
+                 response_code,
                  tr.get_size() / 1024)
-        self._transactions.remove(tr)
-        self._total_count -= 1
-        self._total_size -= tr.get_size()
+        self._remove(tr)
         self._transactions_flushed += 1
         self.print_queue_stats()
-        self._too_big_count += 1
+        self._transactions_rejected += 1
         ForwarderStatus(
             queue_length=self._total_count,
             queue_size=self._total_size,
             flush_count=self._flush_count,
             transactions_received=self._transactions_received,
             transactions_flushed=self._transactions_flushed,
-            too_big_count=self._too_big_count).persist()
+            transactions_rejected=self._transactions_rejected).persist()
 
     def tr_success(self, tr):
         self._running_flushes -= 1
         self._finished_flushes += 1
         log.debug("Transaction %d completed",  tr.get_id())
-        self._transactions.remove(tr)
-        self._total_count -= 1
-        self._total_size -= tr.get_size()
+        self._remove(tr)
         self._transactions_flushed += 1
         self.print_queue_stats()

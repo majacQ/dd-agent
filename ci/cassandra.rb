@@ -1,42 +1,67 @@
-# (C) Datadog, Inc. 2010-2016
+# (C) Datadog, Inc. 2018
 # All rights reserved
 # Licensed under Simplified BSD License (see LICENSE)
-
 require './ci/common'
 
-# TODO: make this available in the matrix
-def cass_version
-  ENV['FLAVOR_VERSION'] || '2.1.3'
+def cassandra_version
+  ENV['FLAVOR_VERSION'] || '2.2.10' # '2.1.14' # '2.0.17'
 end
 
-def cass_rootdir
-  "#{ENV['INTEGRATIONS_DIR']}/cass_#{cass_version}"
+def cassandra_rootdir
+  "#{ENV['INTEGRATIONS_DIR']}/cassandra_#{cassandra_version}"
 end
+
+def test_dir
+  "#{ENV['TRAVIS_BUILD_DIR']}/tests/cassandra"
+end
+
+container_name = 'dd-test-cassandra'
+container_port = 7199
+cassandra_jmx_options = "-Dcom.sun.management.jmxremote.port=#{container_port}
+  -Dcom.sun.management.jmxremote.rmi.port=#{container_port}
+  -Dcom.sun.management.jmxremote.ssl=false
+  -Dcom.sun.management.jmxremote.authenticate=true
+  -Dcom.sun.management.jmxremote.password.file=/etc/cassandra/jmxremote.password
+  -Djava.rmi.server.hostname=localhost"
 
 namespace :ci do
   namespace :cassandra do |flavor|
-    task before_install: ['ci:common:before_install']
+    task before_install: ['ci:common:before_install'] do
+      sh %(docker kill #{container_name} 2>/dev/null || true)
+      sh %(docker rm #{container_name} 2>/dev/null || true)
+      sh %(rm -f #{test_dir}/jmxremote.password.tmp)
+    end
 
-    task install: ['ci:common:install'] do
-      unless Dir.exist? File.expand_path(cass_rootdir)
-        # Downloads
-        # http://cassandra.apache.org/download/
-        sh %(curl -s -L\
-             -o $VOLATILE_DIR/apache-cassandra-#{cass_version}-bin.tar.gz\
-              https://s3.amazonaws.com/dd-agent-tarball-mirror/apache-cassandra-#{cass_version}-bin.tar.gz)
-        sh %(mkdir -p #{cass_rootdir})
-        sh %(tar zxf $VOLATILE_DIR/apache-cassandra-#{cass_version}-bin.tar.gz\
-             -C #{cass_rootdir} --strip-components=1)
-      end
+    task :install do
+      Rake::Task['ci:common:install'].invoke('cassandra')
+      sh %(docker pull cassandra:#{cassandra_version})
+      sh %(docker create --expose #{container_port} \
+           -p #{container_port}:#{container_port} -e JMX_PORT=#{container_port} \
+           -e LOCAL_JMX='no' -e JVM_EXTRA_OPTS="#{cassandra_jmx_options}" --name #{container_name} cassandra:#{cassandra_version})
+
+      sh %(cp #{test_dir}/jmxremote.password #{test_dir}/jmxremote.password.tmp)
+      sh %(chmod 400 #{test_dir}/jmxremote.password.tmp)
+      sh %(docker cp #{test_dir}/jmxremote.password.tmp #{container_name}:/etc/cassandra/jmxremote.password)
+      sh %(rm -f #{test_dir}/jmxremote.password.tmp)
+      sh %(docker start #{container_name})
     end
 
     task before_script: ['ci:common:before_script'] do
-      sh %(cp $TRAVIS_BUILD_DIR/ci/resources/cassandra/cassandra_#{cass_version.split('.')[0..1].join('.')}.yaml #{cass_rootdir}/conf/cassandra.yaml)
-      sh %(#{cass_rootdir}/bin/cassandra -p $VOLATILE_DIR/cass.pid > /dev/null)
-      # Create temp cassandra workdir
-      sh %(mkdir -p $VOLATILE_DIR/cassandra)
-      # Wait for cassandra to init
-      Wait.for 7000, 10
+      # Wait.for container_port
+      count = 0
+      logs = `docker logs #{container_name} 2>&1`
+      puts 'Waiting for Cassandra to come up'
+      until count == 20 || logs.include?('Listening for thrift clients') || logs.include?("Created default superuser role 'cassandra'")
+        sleep_for 2
+        logs = `docker logs #{container_name} 2>&1`
+        count += 1
+      end
+      if logs.include?('Listening for thrift clients') || logs.include?("Created default superuser role 'cassandra'")
+        puts 'Cassandra is up!'
+      else
+        sh %(docker logs #{container_name} 2>&1)
+        raise
+      end
     end
 
     task script: ['ci:common:script'] do
@@ -46,21 +71,26 @@ namespace :ci do
       Rake::Task['ci:common:run_tests'].invoke(this_provides)
     end
 
-    task before_cache: :cleanup
+    task before_cache: ['ci:common:before_cache']
 
     task cleanup: ['ci:common:cleanup'] do
-      sh %(kill `cat $VOLATILE_DIR/cass.pid`)
-      sleep_for 3
-      sh %(rm -rf #{cass_rootdir}/data)
+      sh %(docker kill #{container_name} 2>/dev/null || true)
+      sh %(docker rm #{container_name} 2>/dev/null || true)
+      sh %(rm -f #{test_dir}/jmxremote.password.tmp)
     end
 
     task :execute do
       exception = nil
       begin
-        %w(before_install install before_script
-           script before_cache).each do |t|
-          Rake::Task["#{flavor.scope.path}:#{t}"].invoke
+        %w[before_install install before_script].each do |u|
+          Rake::Task["#{flavor.scope.path}:#{u}"].invoke
         end
+        if !ENV['SKIP_TEST']
+          Rake::Task["#{flavor.scope.path}:script"].invoke
+        else
+          puts 'Skipping tests'.yellow
+        end
+        Rake::Task["#{flavor.scope.path}:before_cache"].invoke
       rescue => e
         exception = e
         puts "Failed task: #{e.class} #{e.message}".red

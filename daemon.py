@@ -11,18 +11,24 @@
 """
 
 # Core modules
+from contextlib import nested
 import atexit
 import errno
 import logging
 import os
 import signal
 import sys
+import tempfile
 import time
 
 # project
+from utils.platform import Platform
 from utils.process import is_my_process
+from utils.subprocess_output import subprocess
+from config import get_logging_config
 
 log = logging.getLogger(__name__)
+
 
 class AgentSupervisor(object):
     ''' A simple supervisor to keep a restart a child on expected auto-restarts
@@ -84,6 +90,78 @@ class AgentSupervisor(object):
         # in the child
         else:
             sys.exit(0)
+
+class ProcessRunner(object):
+    def __init__(self):
+        self.logging_config = get_logging_config()
+        self._process = None
+        self._running = True
+
+    @property
+    def status(self):
+        """
+        Get the status of the runner. Exits with 0 if running, 1 if not.
+        """
+        if self._process and self._running:
+            return 0
+
+        return 1
+
+    def terminate(self):
+        if self._process:
+            self._process.terminate()
+
+    def _handle_sigterm(self, signum, frame):
+        # Terminate jmx process on SIGTERM signal
+        log.debug("Caught sigterm. Stopping subprocess.")
+        self.terminate()
+
+    def register_signal_handlers(self):
+        """
+        Enable SIGTERM and SIGINT handlers
+        """
+        try:
+            # Gracefully exit on sigterm
+            signal.signal(signal.SIGTERM, self._handle_sigterm)
+
+            # Handle Keyboard Interrupt
+            signal.signal(signal.SIGINT, self._handle_sigterm)
+
+        except ValueError:
+            log.exception("Unable to register signal handlers.")
+
+    def execute(self, process_args, redirect_std_streams=None, env=None):
+        try:
+            with nested(tempfile.TemporaryFile(), tempfile.TemporaryFile()) as (stdout_f, stderr_f):
+                process = subprocess.Popen(
+                    process_args,
+                    close_fds=not redirect_std_streams,  # only set to True when the streams are not redirected, for WIN compatibility
+                    stdout=stdout_f if redirect_std_streams else None,
+                    stderr=stderr_f if redirect_std_streams else None,
+                    env=env
+                )
+                self._process = process
+                self._running = True
+
+                # Register SIGINT and SIGTERM signal handlers
+                self.register_signal_handlers()
+
+                # Wait for process to return
+                self._process.wait()
+                self._running = False
+
+                if redirect_std_streams:
+                    stderr_f.seek(0)
+                    err = stderr_f.read()
+                    stdout_f.seek(0)
+                    out = stdout_f.read()
+                    sys.stdout.write(out)
+                    sys.stderr.write(err)
+
+            return self._process.returncode
+        except Exception:
+            log.exception("Could not launch process")
+            raise
 
 
 class Daemon(object):
@@ -152,28 +230,29 @@ class Daemon(object):
 
         log.info("Daemon started")
 
-
     def start(self, foreground=False):
         log.info("Starting")
-        pid = self.pid()
+        if not Platform.is_windows():
+            pid = self.pid()
 
-        if pid:
-            # Check if the pid in the pidfile corresponds to a running process
-            # and if psutil is installed, check if it's a datadog-agent one
-            if is_my_process(pid):
-                log.error("Not starting, another instance is already running"
-                          " (using pidfile {0})".format(self.pidfile))
-                sys.exit(1)
-            else:
-                log.warn("pidfile doesn't contain the pid of an agent process."
-                         ' Starting normally')
+            if pid:
+                # Check if the pid in the pidfile corresponds to a running process
+                # and if psutil is installed, check if it's a datadog-agent one
+                if is_my_process(pid):
+                    log.error("Not starting, another instance is already running"
+                            " (using pidfile {0})".format(self.pidfile))
+                    sys.exit(1)
+                else:
+                    log.warn("pidfile doesn't contain the pid of an agent process."
+                            ' Starting normally')
 
-        log.info("Pidfile: %s" % self.pidfile)
-        if not foreground:
-            self.daemonize()
-        self.write_pidfile()
+            if not foreground:
+                self.daemonize()
+            self.write_pidfile()
+        else:
+            log.debug("Skipping pidfile check for Windows")
+
         self.run()
-
 
     def stop(self):
         log.info("Stopping daemon")
@@ -211,12 +290,10 @@ class Daemon(object):
 
             return # Not an error in a restart
 
-
     def restart(self):
         "Restart the daemon"
         self.stop()
         self.start()
-
 
     def run(self):
         """
@@ -232,7 +309,6 @@ class Daemon(object):
         called to provide information about the status of the process
         """
         raise NotImplementedError
-
 
     def status(self):
         """
@@ -268,7 +344,6 @@ class Daemon(object):
         sys.stdout.write(message + "\n")
         sys.exit(exit_code)
 
-
     def pid(self):
         # Get the pid from the pidfile
         try:
@@ -280,7 +355,6 @@ class Daemon(object):
             return None
         except ValueError:
             return None
-
 
     def write_pidfile(self):
         # Write pidfile
@@ -296,7 +370,6 @@ class Daemon(object):
             log.exception(msg)
             sys.stderr.write(msg + "\n")
             sys.exit(1)
-
 
     def delpid(self):
         try:
