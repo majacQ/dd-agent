@@ -4,6 +4,7 @@ from functools import partial
 import logging
 import time
 import unittest
+import sys
 
 # 3rd
 from mock import Mock, patch
@@ -11,7 +12,6 @@ from mock import Mock, patch
 # project
 from tests.checks.common import Fixtures
 from utils.timeout import TimeoutException
-
 
 log = logging.getLogger(__name__)
 
@@ -184,15 +184,18 @@ class SWbemServices(object):
             results += load_fixture("win32_perfformatteddata_w3svc_webservice", ("Name", "Default Web Site"))  # noqa
             results += load_fixture("win32_perfformatteddata_w3svc_webservice", ("Name", "Working site"))  # noqa
 
+        if query == ("Select ServiceUptime,TotalBytesSent,TotalBytesReceived,TotalBytesTransfered,CurrentConnections,TotalFilesSent,TotalFilesReceived,"  # noqa
+                     "TotalConnectionAttemptsAllInstances,TotalGetRequests,TotalPostRequests,TotalHeadRequests,TotalPutRequests,TotalDeleteRequests,"  # noqa
+                     "TotalOptionsRequests,TotalTraceRequests,TotalNotFoundErrors,TotalLockedErrors,TotalAnonymousUsers,TotalNonAnonymousUsers,TotalCGIRequests,"  # noqa
+                     "TotalISAPIExtensionRequests from Win32_PerfFormattedData_W3SVC_WebService WHERE ( Name = 'Failing site' ) OR ( Name = 'Working site' ) OR ( Name = 'Default Web Site' )"):  # noqa
+            results += load_fixture("win32_perfformatteddata_w3svc_webservice_2008", ("Name", "Default Web Site"))  # noqa
+            results += load_fixture("win32_perfformatteddata_w3svc_webservice_2008", ("Name", "Working site"))  # noqa
+
         if query == ("Select ServiceUptime,TotalBytesSent,TotalBytesReceived,TotalBytesTransferred,CurrentConnections,TotalFilesSent,TotalFilesReceived,"  # noqa
                      "TotalConnectionAttemptsAllInstances,TotalGetRequests,TotalPostRequests,TotalHeadRequests,TotalPutRequests,TotalDeleteRequests,"  # noqa
                      "TotalOptionsRequests,TotalTraceRequests,TotalNotFoundErrors,TotalLockedErrors,TotalAnonymousUsers,TotalNonAnonymousUsers,TotalCGIRequests,"  # noqa
                      "TotalISAPIExtensionRequests from Win32_PerfFormattedData_W3SVC_WebService WHERE ( Name = '_Total' )"):  # noqa
             results += load_fixture("win32_perfformatteddata_w3svc_webservice", ("Name", "_Total"))  # noqa
-
-        if query == ("Select * from Win32_PerfFormattedData_W3SVC_WebService WHERE ( Name = 'Failing site' ) OR ( Name = 'Working site' ) OR ( Name = 'Default Web Site' )"):  # noqa
-            results += load_fixture("win32_perfformatteddata_w3svc_webservice_2008", ("Name", "Default Web Site"))  # noqa
-            results += load_fixture("win32_perfformatteddata_w3svc_webservice_2008", ("Name", "Working Site"))  # noqa
 
         if query == ("Select Name,State from Win32_Service WHERE ( Name = 'WSService' ) OR ( Name = 'WinHttpAutoProxySvc' )"):  # noqa
             results += load_fixture("win32_service_up", ("Name", "WinHttpAutoProxySvc"))
@@ -363,7 +366,7 @@ class TestCommonWMI(unittest.TestCase):
 
         return None
 
-
+@unittest.skipUnless(sys.platform.startswith("win"), "requires Windows")
 class TestUnitWMISampler(TestCommonWMI):
     """
     Unit tests for WMISampler.
@@ -523,7 +526,7 @@ class TestUnitWMISampler(TestCommonWMI):
 
         from checks.libs.wmi import sampler
         from datetime import datetime
-        from checks.wmi_check import from_time
+        from checks.winwmi_check import from_time
         format_filter = sampler.WMISampler._format_filter
 
         filters = []
