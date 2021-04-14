@@ -43,8 +43,8 @@ from utils.windows_configuration import get_registry_conf, get_windows_sdk_check
 
 
 # CONSTANTS
-AGENT_VERSION = "5.32.7"
-JMX_VERSION = "0.26.4"
+AGENT_VERSION = "5.32.9"
+JMX_VERSION = "0.26.8"
 DATADOG_CONF = "datadog.conf"
 UNIX_CONFIG_PATH = '/etc/dd-agent'
 MAC_CONFIG_PATH = '/opt/datadog-agent/etc'
@@ -596,10 +596,6 @@ def get_config(parse_args=True, cfg_path=None, options=None, can_query_registry=
 
         if config.has_option("Main", "skip_ssl_validation"):
             agentConfig["skip_ssl_validation"] = _is_affirmative(config.get("Main", "skip_ssl_validation"))
-
-        agentConfig["disable_unsafe_yaml"] = True
-        if config.has_option("Main", "disable_unsafe_yaml"):
-            agentConfig["disable_unsafe_yaml"] = _is_affirmative(config.get("Main", "disable_unsafe_yaml"))
 
         agentConfig["collect_instance_metadata"] = True
         if config.has_option("Main", "collect_instance_metadata"):
