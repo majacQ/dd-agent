@@ -1,5 +1,5 @@
 pymongo
-tornado==3.2.2
+tornado==5.1
 redis
 python-memcached
 pyyaml
