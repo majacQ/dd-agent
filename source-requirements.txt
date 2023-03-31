@@ -7,7 +7,7 @@ pg8000==1.9.6
 PyMySQL==0.6.1
 python-memcached==1.53
 pyyaml==5.4
-redis==2.10.1
+redis==4.4.4
 requests==2.20.0
 simplejson==3.3.3
 snakebite==1.3.9
